@@ -1,0 +1,150 @@
+# For WT 5
+# Method for wind conditions - wind veer (approach with full rotor veer measurement) omitted for now
+
+AEP_start_bins = 3  
+AEP_end_bins = 23  
+
+u_M_upflow = 0.02 / 100 * bins_5['wind speed [m/s]']  # Uncertainty due to upflow
+u_M_ti_bin = 0.4 / 100 * bins_5['wind speed [m/s]']  # Uncertainty due to turbulence
+u_M_sfx_bin = 0.7 / 100 * bins_5['wind speed [m/s]']  # Uncertainty due to seasonal effects
+u_M_coldclimate = 0.5 / 100 * bins_5['wind speed [m/s]']  # Cold climate uncertainty
+
+# Sum of systematic uncertainty
+u_c_wsp_catB_bin = np.sqrt(u_M_upflow**2 + u_M_ti_bin**2 + u_M_sfx_bin**2 + u_M_coldclimate**2)
+
+# Uncertainty due to power measurement
+u_P_CT_bin = 0.0075 / np.sqrt(3) * bins_5['Power [kW]']  # Uncertainty from current transformer
+u_P_VT_bin = 0.005 / np.sqrt(3) * bins_5['Power [kW]']  # Uncertainty from voltage transformer
+u_dP_bin = 0.1 / 100 * 5300 * 1.5  # Measurement uncertainty in power
+
+# Total power uncertainty
+u_P_bin = np.sqrt(u_P_CT_bin ** 2 + u_P_VT_bin ** 2 + u_dP_bin ** 2)
+
+# Temperature sensor uncertainties
+u_T_cal_bin = 0.3  # Calibration uncertainty from datasheet
+u_T_shield_bin = 1.5  # Shielding uncertainty by default
+u_T_mnt_bin = 0.25  # Mounting uncertainty by default
+u_dt_bin = 0.1/100 * 100  # Data acquisition uncertainty for 100°C range
+
+# Total temperature uncertainty
+u_T_bin = np.sqrt(u_T_cal_bin**2 + u_T_shield_bin**2 + u_T_mnt_bin**2 + u_dt_bin**2)
+
+# Pressure sensor uncertainties
+u_B_cal_bin = 3  # Calibration uncertainty from datasheet
+u_B_mnt_bin = 0  # Mounting uncertainty (pressure diff between heights)
+u_dB_bin = 0.1/100 * 400  # Data acquisition uncertainty for pressure
+
+# Total pressure uncertainty
+u_B_bin = np.sqrt(u_B_cal_bin**2 + u_B_mnt_bin**2 + u_dB_bin**2)
+
+end_bins = len(bins_5)  # Determine the number of bins
+c_V_bin = np.zeros(end_bins)  # Initialize c_V_bin array
+
+# Calculate c_V for each bin
+for i in range(1, end_bins - 1):  
+    c_V_bin[i] = 0.5 * (
+        (bins_5['Power [kW]'].iloc[i + 1] - bins_5['Power [kW]'].iloc[i]) /
+        (bins_5['wind speed [m/s]'].iloc[i + 1] - bins_5['wind speed [m/s]'].iloc[i]) +
+        (bins_5['Power [kW]'].iloc[i] - bins_5['Power [kW]'].iloc[i - 1]) /
+        (bins_5['wind speed [m/s]'].iloc[i] - bins_5['wind speed [m/s]'].iloc[i - 1])
+    )
+
+# First element calculation for c_V
+c_V_bin[0] = (bins_5['Power [kW]'].iloc[1] - bins_5['Power [kW]'].iloc[0]) / (bins_5['wind speed [m/s]'].iloc[1] - bins_5['wind speed [m/s]'].iloc[0])
+
+# Last element calculation for c_V
+c_V_bin[end_bins - 1] = (bins_5['Power [kW]'].iloc[end_bins - 1] - bins_5['Power [kW]'].iloc[end_bins - 2]) / (bins_5['wind speed [m/s]'].iloc[end_bins - 1] - bins_5['wind speed [m/s]'].iloc[end_bins - 2])
+
+stdP_bin = bins_5['Power [kW]'].std()  # Standard deviation of power
+N_bin = bins_5['Number_N_'].values  # Number of values in each bin
+s_P_bin = stdP_bin / np.sqrt(N_bin)  # Standard error of the mean
+
+# Category B uncertainty in power
+u_c_catB_bin = np.sqrt(
+    u_P_bin**2 +
+    (c_V_bin**2 * u_c_wsp_catB_bin**2) +
+    u_M_ti_bin**2
+)
+
+# Total uncertainty in power (u_c_bin)
+u_c_bin = np.sqrt(s_P_bin**2 + u_c_catB_bin**2)
+
+# Assign IPC uncertainty
+u_c_catB_binIPC = u_c_catB_bin
+u_c_binIPC = u_c_bin
+
+# Measured AEP calculation
+WSP_meas_bin = np.concatenate(([0.5], bins_5['wind speed [m/s]'][3:23], np.arange(12, 25.5, 0.5)))  # Wind speed bins
+P_meas_bin = np.concatenate(([0], bins_5['Power [kW]'][3:23], np.zeros(25)))  # Power bins (zeros after bin 25)
+
+Vave_vector = [4, 5, 6, 7, 8, 9, 10, 11]
+AEP_vector5 = []
+u_AEP_vector5 = []
+rel_u_AEP_vector5 = []
+
+# AEP calculation
+for Vave in Vave_vector:
+    F_Rayl = np.zeros(AEP_end_bins + 1)
+    AEP_contr = np.zeros(AEP_end_bins + 1)
+    f_i = np.zeros(AEP_end_bins + 1)
+
+    # Start bin calculation
+    F_Rayl[AEP_start_bins - 1] = 1 - np.exp(-np.pi / 4 * ((WSP_meas_bin[AEP_start_bins] - 0.5) / Vave) ** 2)
+    P_meas_bin[AEP_start_bins - 1] = 0
+
+    # Loop for AEP calculation
+    for i in range(AEP_start_bins, AEP_end_bins):
+        F_Rayl[i] = 1 - np.exp(-np.pi / 4 * (WSP_meas_bin[i] / Vave) ** 2)
+        AEP_contr[i] = (F_Rayl[i] - F_Rayl[i - 1]) * (P_meas_bin[i - 1] + P_meas_bin[i]) / 2
+        f_i[i] = F_Rayl[i] - F_Rayl[i - 1]
+
+    # Calculate AEP in MWh
+    AEP = 8760 * np.nansum(AEP_contr) / 1000  # Convert to MWh
+
+    # Uncertainty calculation
+    ind = np.arange(AEP_start_bins, AEP_end_bins)
+    u_AEP = 8760 * np.sqrt(np.nansum((f_i[ind] ** 2) * (s_P_bin[ind] ** 2)) + 
+                          (np.nansum(f_i[ind] * u_c_catB_binIPC[ind]) ** 2)) / 1000  # Convert to MWh
+
+    AEP_vector5.append(AEP)
+    u_AEP_vector5.append(u_AEP)
+    rel_u_AEP_vector5.append(u_AEP / AEP * 100)  # Relative uncertainty in %
+
+# Extrapolated AEP calculation
+AEP_extr_vector5 = []
+
+WSP_extr_bin = np.concatenate(([0.5], bins_5['wind speed [m/s]'][3:23], np.arange(12, 25.5, 0.5)))  # Wind speed bins
+P_extr_bin = np.concatenate(([0], bins_5['Power [kW]'][3:23], 5300 * np.ones(25)))  # Extrapolated power at 5.3 MW (in kW)
+
+# Extrapolated AEP loop
+for Vave in Vave_vector:
+    F_Rayl = np.zeros(AEP_end_bins + 1)
+    AEP_extr_contr = np.zeros(AEP_end_bins + 1)
+
+    # Start bin calculation
+    F_Rayl[AEP_start_bins - 1] = 1 - np.exp(-np.pi / 4 * ((WSP_extr_bin[AEP_start_bins] - 0.5) / Vave) ** 2)
+    P_extr_bin[AEP_start_bins - 1] = 0
+
+    # Loop for AEP calculation
+    for i in range(AEP_start_bins, AEP_end_bins):
+        F_Rayl[i] = 1 - np.exp(-np.pi / 4 * (WSP_extr_bin[i] / Vave) ** 2)
+        AEP_extr_contr[i] = (F_Rayl[i] - F_Rayl[i - 1]) * (P_extr_bin[i - 1] + P_extr_bin[i]) / 2
+
+    # Calculate AEP in MWh
+    AEP_extr = 8760 * np.nansum(AEP_extr_contr) / 1000  # Convert to MWh
+
+    AEP_extr_vector5.append(AEP_extr)
+
+# Relative uncertainty between measured and extrapolated AEP
+rel_uncertainty_vector5 = []
+
+for aep, aep_extr in zip(AEP_vector5, AEP_extr_vector5):
+    if aep_extr != 0:
+        rel_uncertainty = (aep - aep_extr) / aep_extr * 100
+        rel_uncertainty_vector5.append(rel_uncertainty)
+    else:
+        rel_uncertainty_vector5.append(np.nan)
+
+# Print results
+for v, u, j in zip(AEP_vector5, rel_uncertainty_vector5, AEP_extr_vector5):
+    print(f"AEP IPC on: {v} MWh, {j}, Relative Uncertainty: {u:.2f}%")
